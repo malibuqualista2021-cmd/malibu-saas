@@ -1,0 +1,173 @@
+// Harmonik PRZ Malibu - SaaS Platform Database Schema
+// Stack: PostgreSQL + Prisma ORM
+// Auth: NextAuth.js with Prisma Adapter
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// ENUMS - Type Safety
+// ============================================
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum SubscriptionStatus {
+  TRIAL              // 7-day free trial active
+  ACTIVE             // Paid subscription active
+  EXPIRED            // Subscription ended
+  PENDING_APPROVAL   // Waiting for admin to grant access
+}
+
+enum PaymentStatus {
+  PENDING    // Submitted, awaiting admin verification
+  APPROVED   // Admin confirmed payment
+  REJECTED   // Admin rejected (invalid TXID, wrong amount, etc.)
+}
+
+// ============================================
+// USER MODEL
+// ============================================
+
+model User {
+  id                    String        @id @default(cuid())
+  email                 String        @unique
+  emailVerified         DateTime?
+  password              String        // Hashed with bcrypt
+  name                  String?
+  
+  // TradingView Integration
+  tradingViewUsername   String        @unique @map("tradingview_username")
+  
+  // Access Control
+  role                  UserRole      @default(USER)
+  isActive              Boolean       @default(true) @map("is_active")
+  
+  // Relations
+  subscription          Subscription?
+  paymentRequests       PaymentRequest[]
+  
+  // NextAuth.js fields
+  accounts              Account[]
+  sessions              Session[]
+  
+  // Metadata
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+  
+  @@map("users")
+}
+
+// ============================================
+// SUBSCRIPTION MODEL (1-to-1 with User)
+// ============================================
+
+model Subscription {
+  id                String              @id @default(cuid())
+  userId            String              @unique @map("user_id")
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Status & Lifecycle
+  status            SubscriptionStatus  @default(PENDING_APPROVAL)
+  trialUsed         Boolean             @default(false) @map("trial_used")
+  
+  // Date Management
+  startDate         DateTime?           @map("start_date")    // When trial/subscription started
+  endDate           DateTime?           @map("end_date")      // When it expires (null = lifetime)
+  
+  // Admin Notes
+  adminNote         String?             @map("admin_note")    // e.g., "Trial granted", "Access given after payment #123"
+  accessGrantedAt   DateTime?           @map("access_granted_at") // When admin approved access
+  accessGrantedBy   String?             @map("access_granted_by") // Admin user ID
+  
+  // Metadata
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+  
+  @@map("subscriptions")
+}
+
+// ============================================
+// PAYMENT REQUEST MODEL
+// ============================================
+
+model PaymentRequest {
+  id                String          @id @default(cuid())
+  userId            String          @map("user_id")
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Transaction Details
+  txid              String          @unique  // Blockchain transaction hash (TRC20)
+  amount            Float                    // Amount in USDT
+  
+  // Payment Info
+  status            PaymentStatus   @default(PENDING)
+  paymentDate       DateTime        @map("payment_date") // When user submitted
+  
+  // Admin Review
+  reviewedAt        DateTime?       @map("reviewed_at")
+  reviewedBy        String?         @map("reviewed_by")  // Admin user ID
+  adminNote         String?         @map("admin_note")   // Rejection reason, notes, etc.
+  
+  // License Duration (submitted by user)
+  requestedPlan     String?         @map("requested_plan") // "monthly", "yearly", "lifetime"
+  
+  // Metadata
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+  
+  @@map("payment_requests")
+  @@index([status])
+  @@index([userId])
+}
+
+// ============================================
+// NEXTAUTH.JS MODELS (Required for Auth)
+// ============================================
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
